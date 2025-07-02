@@ -1,15 +1,13 @@
 use std::{
-    io::Write,
-    os::unix::net::UnixListener,
+    os::unix::net::{UnixListener, UnixStream},
     process::Child,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, LazyLock,
     },
-    time::Duration,
 };
 
-use crate::hyprctl::{self, Event};
+use crate::{hyprctl::{self, Event}, log_error};
 use anyhow::Result;
 use remote::{RemoteRequest, RemoteResponse};
 
@@ -82,39 +80,45 @@ impl Daemon {
 
     #[allow(clippy::unnecessary_wraps)]
     fn hyprctl_step(&mut self) -> Result<()> {
-        use hyprctl::{Color, NotifyIcon};
-
         let events: Vec<Result<Event>> = (&mut self.socket2).collect();
 
         for event in events {
             match self.handle_event(event) {
                 Ok(()) => {}
-                Err(e) => {
-                    eprintln!("{e}");
-                    let _ = hyprctl::notify(
-                        NotifyIcon::Error,
-                        Duration::from_secs(5),
-                        Color::Rgb(255, 0, 0),
-                        &format!("HomeHelper Error: {e}"),
-                    );
-                }
+                Err(e) => log_error(&e),
             }
         }
 
         Ok(())
     }
 
+	fn listener_handle_request(&mut self, request: RemoteRequest) -> Result<RemoteResponse> {
+		Ok(match request {
+			RemoteRequest::Workspaces => RemoteResponse::Workspaces(hyprctl::workspaces::workspaces()?),
+			RemoteRequest::Monitors => RemoteResponse::Monitors(hyprctl::monitors()?),
+		})
+	}
+
+	fn listener_handle_socket(&mut self, mut socket: UnixStream) -> Result<()> {
+		let request: RemoteRequest = ciborium::from_reader(&mut socket)?;
+		match self.listener_handle_request(request) {
+			Ok(response) => ciborium::into_writer(&response, &mut socket)?,
+			Err(e) => {
+				log_error(&e);
+				ciborium::into_writer(&RemoteResponse::Error(format!("{e:#}")), &mut socket)?
+			},
+		}
+
+		Ok(())
+	}
+
     fn listener_step(&mut self) -> Result<()> {
         match self.home_helper_socket.accept() {
-            Ok((mut s, _)) => {
-                let request: RemoteRequest = ciborium::from_reader(&mut s)?;
-
-                match request {
-                    RemoteRequest::Workspaces => ciborium::into_writer(
-                        &RemoteResponse::Workspaces(hyprctl::workspaces::workspaces()?),
-                        &mut s,
-                    )?,
-                }
+            Ok((s, _)) => {
+				match self.listener_handle_socket(s) {
+					Ok(()) => {},
+					Err(e) => log_error(&e),
+				}
             }
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
             Err(e) => Err(e)?,

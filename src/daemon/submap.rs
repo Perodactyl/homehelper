@@ -4,30 +4,18 @@ use anyhow::Result;
 
 use crate::hyprctl::{self, Bind};
 
-pub fn open_kitty(cmd: &str, lines: usize) -> Result<Child> {
+pub fn open_kitty(cmd: &str, lines: usize, longest_line: usize) -> Result<Child> {
     let mut c = Command::new("kitty");
+
+	//This is why we can't have rustfmt
     let args = [
-        "+kitten",
-        "panel",
-        "--edge",
-        "none",
-        "--layer",
-        "top",
-        "--margin-top",
-        "40",
-        "--margin-bottom",
-        "10",
-        "--margin-right",
-        "10",
-        "--lines",
-        &lines.to_string(),
-        "--columns",
-        "70",
-        "--app-id",
-        "homehelper-submap",
-        "sh",
-        "-c",
-        cmd,
+        "+kitten", "panel",
+		"--edge", "center-sized",
+        "--layer", "top",
+        "--lines", &lines.to_string(),
+        "--columns", &longest_line.to_string(),
+        "--app-id", "homehelper-submap",
+        "sh", "-c", cmd,
     ];
 
     c.args(args);
@@ -41,6 +29,7 @@ pub fn show_binds(binds: &[Bind]) -> Result<Child> {
     for bind in binds {
         longest_bind_name = longest_bind_name.max(bind.key.len());
     }
+	let mut longest_line = 0;
 
     let bind_str = binds
         .iter()
@@ -51,13 +40,15 @@ pub fn show_binds(binds: &[Bind]) -> Result<Child> {
                 spacing.push(' ');
             }
 
-            format!("{}{spacing}{}", b.key, b.description.as_ref().unwrap())
+            let out = format!("{}{spacing}{}", b.key, b.description.as_ref().unwrap());
+			longest_line = longest_line.max(out.len());
+			out
         })
         .collect::<Vec<_>>()
         .join("\n");
 
     let cmd = format!("printf '\x1b[?25l{bind_str}'; sleep infinity");
-    let cp = open_kitty(&cmd, binds.len())?;
+    let cp = open_kitty(&cmd, binds.len(), longest_line)?;
 
     Ok(cp)
 }

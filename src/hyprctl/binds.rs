@@ -8,8 +8,6 @@ struct BindInternal {
     locked: bool,
     mouse: bool,
     release: bool,
-    click: bool,
-    drag: bool,
     repeat: bool,
     #[serde(rename = "longPress")]
     long_press: bool,
@@ -31,8 +29,6 @@ pub enum BindTrigger {
     Release,
     LongPress,
     CatchAll,
-    Click,
-    Drag,
     Mouse,
 }
 
@@ -59,10 +55,6 @@ impl From<BindInternal> for Bind {
             modmask: value.modmask,
             trigger: if value.mouse {
                 BindTrigger::Mouse
-            } else if value.click {
-                BindTrigger::Click
-            } else if value.drag {
-                BindTrigger::Drag
             } else if value.catch_all {
                 BindTrigger::CatchAll
             } else if value.long_press {
