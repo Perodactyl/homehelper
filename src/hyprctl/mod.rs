@@ -10,8 +10,9 @@ pub use notify::*;
 pub mod binds;
 pub use binds::*;
 pub mod socket2;
-pub mod workspaces;
 pub use socket2::*;
+pub mod workspaces;
+pub use workspaces::*;
 pub mod monitors;
 pub use monitors::*;
 

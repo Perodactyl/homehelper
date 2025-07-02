@@ -1,0 +1,23 @@
+
+						//Rust is SO CUMBERSOME I can't do ANYTHING without a hundred lines
+						//of boilerplate
+						//
+						//(in other words, i now need to implement dynamic cross-thread setting of
+						//event handlers)
+						//...or maybe since nothing else is threaded...
+						// make a trait for thingies that need to be in the main event loop
+						// and implement it?
+						// well, in any case, i need more workspaces available
+						// so for a bit i will take a break and make myself keybinds for window
+						// grouping, then i can merge all the 1-window workspaces with configs for
+						// different things open into a single workspace
+						//
+						// ok i finished with that but fsr the docs say
+						// group:groupbar:{text_color_inactive, text_color_locked_active,
+						// text_color_locked_inactive} exist but they dont so now im angery since
+						// my matugen theme can't have proper text colors over my tab colors
+						//
+						// ok fine i will go back to coding
+						// also i haven't slept since noon but i can't go to sleep because then i
+						// will be super tired in 2 hours when i need to be awake so i can go on
+						// vacation with my family

@@ -23,6 +23,85 @@ macro_rules! impl_request {
     };
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EwwWorkspace {
+	index: Option<String>,
+	name: Option<String>,
+	icon: Option<String>,
+	active_on: Option<String>,
+	is_special: bool,
+	special_name: String,
+	id: i32,
+} impl EwwWorkspace {
+	pub fn new(monitors: &Vec<Monitor>, workspace: Workspace) -> Self {
+		let mut active_on = None;
+		for monitor in monitors {
+			if monitor.active_workspace.id == workspace.id {
+				active_on = Some(monitor.name.clone());
+				break;
+			} else if let Some(special) = &monitor.special_workspace && special.id == workspace.id {
+				active_on = Some(monitor.name.clone());
+				break;
+			}
+		}
+		let is_special = workspace.id < 0;
+
+		if is_special {
+			EwwWorkspace {
+				active_on,
+				is_special,
+				index: None,
+				icon: Some(match &workspace.name[..] {
+					"special:guide" => "󰈹",
+					"special:term" => "",
+					"special:other" => "",
+					"special:music" => "",
+					"special:notes" => "",
+					"special:testing" => "",
+					n => n,
+				}.to_string()),
+				name: None,
+				id: workspace.id,
+				special_name: if let Some((_, right)) = workspace.name.split_once(':') {
+					right.to_string()
+				} else {
+					workspace.name
+				}
+			}
+		} else {
+			if let Ok(parts) = serde_json::from_str::<[String; 3]>(&workspace.name) {
+				let [index, icon, name] = parts;
+				EwwWorkspace {
+					active_on,
+					index: if index.is_empty() {
+						None
+					} else {
+						Some(if index == "#" { workspace.id.to_string() } else { index })
+					},
+					icon: if icon.is_empty() { None } else { Some(icon) },
+					name: if name.is_empty() { None } else { Some(name) },
+					is_special,
+					id: workspace.id,
+					special_name: workspace.name,
+				}
+			} else {
+				EwwWorkspace {
+					active_on,
+					index: Some(workspace.name.clone()),
+					icon: None,
+					name: None,
+					is_special,
+					id: workspace.id,
+					special_name: workspace.name,
+				}
+			}
+		}
+	}
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EwwInfo(pub Vec<EwwWorkspace>);
+
 ///Connection to a remote daemon
 pub struct Remote {
     socket: UnixStream,
@@ -60,6 +139,14 @@ pub fn launch(arguments: Arguments) -> Result<()> {
         RunMode::Monitors => {
             println!("{}", serde_json::to_string(&Remote::new()?.monitors()?)?)
         },
+		RunMode::ListenEww => {
+			let mut r = Remote::new()?;
+			ciborium::into_writer(&RemoteRequest::ListenEww, &mut r.socket)?;
+			loop {
+				let update: EwwInfo = ciborium::from_reader(&mut r.socket)?;
+				println!("{}", serde_json::to_string(&update)?);
+			}
+		}
     }
     Ok(())
 }
@@ -74,6 +161,7 @@ pub struct Arguments {
 enum RunMode {
     Workspaces,
 	Monitors,
+	ListenEww,
 }
 
 ///Message sent to the daemon
@@ -81,6 +169,7 @@ enum RunMode {
 pub enum RemoteRequest {
     Workspaces,
 	Monitors,
+	ListenEww,
 }
 
 ///Message received from the daemon
