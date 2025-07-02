@@ -1,136 +1,149 @@
-use std::{io::Write, os::unix::net::UnixListener, process::Child, sync::{atomic::{AtomicBool, Ordering}, Arc, LazyLock}, time::Duration};
+use std::{
+    io::Write,
+    os::unix::net::UnixListener,
+    process::Child,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, LazyLock,
+    },
+    time::Duration,
+};
 
+use crate::hyprctl::{self, Event};
 use anyhow::Result;
 use remote::{RemoteRequest, RemoteResponse};
-use crate::hyprctl::{self, Event};
 
 mod submap;
 use submap::show_binds_in_submap;
 
 pub mod remote;
 
-
 #[derive(Debug, Clone, clap::Args)]
 pub struct Arguments {
-	#[arg(short, long, action = clap::ArgAction::Set, default_value_t = true)]
-	submap: bool,
+    #[arg(short, long, action = clap::ArgAction::Set, default_value_t = true)]
+    submap: bool,
 }
 
 static DAEMON_SOCKET: LazyLock<String> = LazyLock::new(|| Daemon::socket_path().unwrap());
 
 #[derive(Debug)]
 pub struct Daemon {
-	panel: Option<Child>,
-	options: Arguments,
-	socket2: hyprctl::Socket2,
-	home_helper_socket: UnixListener,
-} impl Daemon {
-	fn new(options: Arguments) -> Result<Self> {
+    panel: Option<Child>,
+    options: Arguments,
+    socket2: hyprctl::Socket2,
+    home_helper_socket: UnixListener,
+}
+impl Daemon {
+    fn new(options: Arguments) -> Result<Self> {
+        let addr = &*DAEMON_SOCKET;
+        println!("Opening socket at {addr}");
+        let socket = UnixListener::bind(addr)?;
+        socket.set_nonblocking(true)?;
 
-		let addr = &*DAEMON_SOCKET;
-		println!("Opening socket at {addr}");
-		let socket = UnixListener::bind(addr)?;
-		socket.set_nonblocking(true)?;
+        let socket2 = hyprctl::Socket2::new()?;
+        Ok(Daemon {
+            panel: None,
+            options,
+            socket2,
+            home_helper_socket: socket,
+        })
+    }
+    pub fn socket_path() -> Result<String> {
+        let runtime = std::env::var("XDG_RUNTIME_DIR")?;
+        Ok(format!("{runtime}/homehelper.sock"))
+    }
 
-		let socket2 = hyprctl::Socket2::new()?;
-		Ok(Daemon {
-			panel: None,
-			options, socket2,
-			home_helper_socket: socket,
-		})
-	}
-	pub fn socket_path() -> Result<String> {
-		let runtime = std::env::var("XDG_RUNTIME_DIR")?;
-		Ok(format!("{runtime}/homehelper.sock"))
-	}
-	
-	pub fn launch(options: Arguments) -> Result<()> {
-		let mut d = Self::new(options)?;
-		
-		let must_exit = Arc::new(AtomicBool::new(false));
-		let thread_must_exit = Arc::clone(&must_exit);
-		
-		ctrlc::set_handler(move || {
-			thread_must_exit.store(true, Ordering::Relaxed);
-		})?;
+    pub fn launch(options: Arguments) -> Result<()> {
+        let mut d = Self::new(options)?;
 
-		loop {
-			d.step()?;
-			if must_exit.load(Ordering::Relaxed) {
-				break;
-			}
-		}
+        let must_exit = Arc::new(AtomicBool::new(false));
+        let thread_must_exit = Arc::clone(&must_exit);
 
-		Ok(())
-	}
+        ctrlc::set_handler(move || {
+            thread_must_exit.store(true, Ordering::Relaxed);
+        })?;
 
-	fn step(&mut self) -> Result<()> {
-		self.hyprctl_step()?;
-		self.listener_step()?;
+        loop {
+            d.step()?;
+            if must_exit.load(Ordering::Relaxed) {
+                break;
+            }
+        }
 
-		Ok(())
-	}
+        Ok(())
+    }
 
-	#[allow(clippy::unnecessary_wraps)]
-	fn hyprctl_step(&mut self) -> Result<()> {
-		use hyprctl::{NotifyIcon, Color};
+    fn step(&mut self) -> Result<()> {
+        self.hyprctl_step()?;
+        self.listener_step()?;
 
-		let events: Vec<Result<Event>> = (&mut self.socket2).collect();
+        Ok(())
+    }
 
-		for event in events {
-			match self.handle_event(event) {
-				Ok(()) => {},
-				Err(e) => {
-					eprintln!("{e}");
-					let _ = hyprctl::notify(
-						NotifyIcon::Error,
-						Duration::from_secs(5),
-						Color::Rgb(255, 0, 0),
-						&format!("HomeHelper Error: {e}"),
-					);
-				}
-			}
-		}
+    #[allow(clippy::unnecessary_wraps)]
+    fn hyprctl_step(&mut self) -> Result<()> {
+        use hyprctl::{Color, NotifyIcon};
 
-		Ok(())
-	}
+        let events: Vec<Result<Event>> = (&mut self.socket2).collect();
 
-	fn listener_step(&mut self) -> Result<()> {
-		match self.home_helper_socket.accept() {
-			Ok((mut s, _)) => {
-				let request: RemoteRequest = ciborium::from_reader(&mut s)?;
-				
-				match request {
-					RemoteRequest::Workspaces => ciborium::into_writer(&RemoteResponse::Workspaces(hyprctl::workspaces::workspaces()?), &mut s)?,
-				}
-			},
-			Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
-			Err(e) => Err(e)?,
-		}
-		Ok(())
-	}
+        for event in events {
+            match self.handle_event(event) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("{e}");
+                    let _ = hyprctl::notify(
+                        NotifyIcon::Error,
+                        Duration::from_secs(5),
+                        Color::Rgb(255, 0, 0),
+                        &format!("HomeHelper Error: {e}"),
+                    );
+                }
+            }
+        }
 
-	fn handle_event(&mut self, event: Result<Event>) -> Result<()> {
-		match event? {
-			Event::Submap { name } if self.options.submap => {
-				if let Some(name) = name {
-					if let Some(mut child) = self.panel.take() {
-						let _ = child.kill();
-					}
-					self.panel = Some(show_binds_in_submap(&name)?);
-				} else if let Some(mut child) = self.panel.take() {
-					let _ = child.kill();
-				}
-			},
-			_ => {},
-		}
+        Ok(())
+    }
 
-		Ok(())
-	}
-} impl Drop for Daemon {
-	fn drop(&mut self) {
-		let addr = &*DAEMON_SOCKET;
-		println!("Closing socket at {addr}");
-		let _ = std::fs::remove_file(addr);
-	}
+    fn listener_step(&mut self) -> Result<()> {
+        match self.home_helper_socket.accept() {
+            Ok((mut s, _)) => {
+                let request: RemoteRequest = ciborium::from_reader(&mut s)?;
+
+                match request {
+                    RemoteRequest::Workspaces => ciborium::into_writer(
+                        &RemoteResponse::Workspaces(hyprctl::workspaces::workspaces()?),
+                        &mut s,
+                    )?,
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
+            Err(e) => Err(e)?,
+        }
+        Ok(())
+    }
+
+    fn handle_event(&mut self, event: Result<Event>) -> Result<()> {
+        match event? {
+            Event::Submap { name } if self.options.submap => {
+                if let Some(name) = name {
+                    if let Some(mut child) = self.panel.take() {
+                        let _ = child.kill();
+                    }
+                    self.panel = Some(show_binds_in_submap(&name)?);
+                } else if let Some(mut child) = self.panel.take() {
+                    let _ = child.kill();
+                }
+            }
+            _ => {}
+        }
+
+        Ok(())
+    }
+}
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        let addr = &*DAEMON_SOCKET;
+        println!("Closing socket at {addr}");
+        let _ = std::fs::remove_file(addr);
+    }
 }

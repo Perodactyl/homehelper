@@ -24,50 +24,52 @@ macro_rules! impl_request {
 
 ///Connection to a remote daemon
 pub struct Remote {
-	socket: UnixStream
-} impl Remote {
-	pub fn new() -> Result<Self> {
-		Ok(Remote {
-			socket: UnixStream::connect(&*DAEMON_SOCKET)?,
-		})
-	}
-	fn send_and_get_response(&mut self, request: &RemoteRequest) -> Result<RemoteResponse> {
-		ciborium::into_writer(request, &mut self.socket)?;
-		Ok(ciborium::from_reader(&mut self.socket)?)
-	}
-	impl_request! {
-		fn workspaces -> Vec<Workspace>:
-			RemoteRequest::Workspaces => out in RemoteResponse::Workspaces(out)
-	}
+    socket: UnixStream,
+}
+impl Remote {
+    pub fn new() -> Result<Self> {
+        Ok(Remote {
+            socket: UnixStream::connect(&*DAEMON_SOCKET)?,
+        })
+    }
+    fn send_and_get_response(&mut self, request: &RemoteRequest) -> Result<RemoteResponse> {
+        ciborium::into_writer(request, &mut self.socket)?;
+        Ok(ciborium::from_reader(&mut self.socket)?)
+    }
+    impl_request! {
+        fn workspaces -> Vec<Workspace>:
+            RemoteRequest::Workspaces => out in RemoteResponse::Workspaces(out)
+    }
 }
 
 pub fn launch(arguments: Arguments) -> Result<()> {
-	match arguments.mode {
-		RunMode::Workspaces => println!("{}", serde_json::to_string(&Remote::new()?.workspaces()?)?)
-	}
-	Ok(())
+    match arguments.mode {
+        RunMode::Workspaces => {
+            println!("{}", serde_json::to_string(&Remote::new()?.workspaces()?)?)
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct Arguments {
-	#[arg(value_enum)]
-	mode: RunMode
+    #[arg(value_enum)]
+    mode: RunMode,
 }
 
 #[derive(Debug, Clone, clap::ValueEnum)]
 enum RunMode {
-	Workspaces,
+    Workspaces,
 }
 
 ///Message sent to the daemon
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RemoteRequest {
-	Workspaces
+    Workspaces,
 }
 
 ///Message received from the daemon
 #[derive(Debug, Serialize, Deserialize)]
 pub enum RemoteResponse {
-	Workspaces(Vec<Workspace>)
+    Workspaces(Vec<Workspace>),
 }
-
