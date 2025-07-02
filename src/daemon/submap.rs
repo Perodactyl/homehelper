@@ -19,15 +19,15 @@ pub fn open_kitty(cmd: &str, lines: usize) -> Result<Child> {
 		"sh", "-c", cmd
 	];
 
-	c.args(&args);
+	c.args(args);
 	c.stdout(Stdio::null());
 	c.stderr(Stdio::null());
 	Ok(c.spawn()?)
 }
 
-pub fn show_binds(binds: Vec<Bind>) -> Result<Child> {
+pub fn show_binds(binds: &[Bind]) -> Result<Child> {
 	let mut longest_bind_name = 0;
-	for bind in &binds {
+	for bind in binds {
 		longest_bind_name = longest_bind_name.max(bind.key.len());
 	}
 
@@ -47,7 +47,7 @@ pub fn show_binds(binds: Vec<Bind>) -> Result<Child> {
 	Ok(cp)
 }
 
-pub fn show_binds_in_submap(name: String) -> Result<Child> {
+pub fn show_binds_in_submap(name: &str) -> Result<Child> {
 	let all_binds = hyprctl::binds()?;
 	let next_binds: Vec<Bind> = all_binds.into_iter()
 		.filter(|b| {
@@ -59,5 +59,5 @@ pub fn show_binds_in_submap(name: String) -> Result<Child> {
 		})
 		.collect();
 
-	show_binds(next_binds)
+	show_binds(&next_binds)
 }

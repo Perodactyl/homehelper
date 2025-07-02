@@ -4,5 +4,6 @@ Current behavior: Listens to, and prints out, hyprland events. When you enter a 
 Future behavior: Keeps track of current state of monitors, workspaces, windows, etc... with lazy loading to minimize number of calls to hyprctl sockets. Properly positions, sizes, and styles the submap panel. Has scripts for use with rofi (which may need to communicate with the main daemon script).
 
 Dependencies:
+
     - kitty (for the panel)
     - hyprland

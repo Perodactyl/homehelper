@@ -2,11 +2,14 @@ use serde::Deserialize;
 use super::send_command;
 use anyhow::Result;
 
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Debug, Clone, Deserialize)]
 struct BindInternal {
 	locked: bool,
 	mouse: bool,
 	release: bool,
+	click: bool,
+	drag: bool,
 	repeat: bool,
 	#[serde(rename = "longPress")]
 	long_press: bool,
@@ -22,16 +25,24 @@ struct BindInternal {
 	arg: String,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BindTrigger {
+	Press,
+	Release,
+	LongPress,
+	CatchAll,
+	Click,
+	Drag,
+	Mouse,
+}
+
 #[allow(unused)]
 #[derive(Debug, Clone)]
 pub struct Bind {
 	pub locked: bool,
-	pub mouse: bool,
-	pub release: bool,
 	pub repeat: bool,
-	pub long_press: bool,
 	pub non_consuming: bool,
-	pub catch_all: bool,
+	pub trigger: BindTrigger,
 	pub modmask: u32,
 	pub submap: Option<String>,
 	pub key: String,
@@ -42,14 +53,25 @@ pub struct Bind {
 	fn from(value: BindInternal) -> Self {
 	    Bind {
 			locked: value.locked,
-			mouse: value.mouse,
-			release: value.release,
 			repeat: value.repeat,
-			long_press: value.long_press,
 			non_consuming: value.non_consuming,
-			catch_all: value.catch_all,
 			modmask: value.modmask,
-			submap: if value.submap.len() > 0 { Some(value.submap) } else { None },
+			trigger: if value.mouse {
+				BindTrigger::Mouse
+			} else if value.click {
+				BindTrigger::Click
+			} else if value.drag {
+				BindTrigger::Drag
+			} else if value.catch_all {
+				BindTrigger::CatchAll
+			} else if value.long_press {
+				BindTrigger::LongPress
+			} else if value.release {
+				BindTrigger::Release
+			} else {
+				BindTrigger::Press
+			},
+			submap: if value.submap.is_empty() { None } else { Some(value.submap) },
 			key: value.key,
 			keycode: value.keycode,
 			description: if value.has_description { Some(value.description) } else { None },
@@ -61,7 +83,7 @@ pub struct Bind {
 pub fn binds() -> Result<Vec<Bind>> {
 	Ok(
 		serde_json::from_str::<Vec<BindInternal>>(&send_command(b"j/binds")?)?.into_iter()
-			.map(|v| <BindInternal as Into<Bind>>::into(v))
+			.map(<BindInternal as Into<Bind>>::into)
 			.collect()
 	)
 }

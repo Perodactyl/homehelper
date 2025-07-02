@@ -1,9 +1,9 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use super::send_command;
 use anyhow::Result;
 
 #[allow(unused)]
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Workspace {
 	pub id: i32,
 	pub name: String,
