@@ -4,17 +4,17 @@ use std::{
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc, LazyLock,
-    },
+    }, time::{Duration, Instant},
 };
 
 use crate::{hyprctl::{self, Event}, log_error};
 use anyhow::Result;
-use remote::{EwwInfo, RemoteRequest, RemoteResponse};
 
 mod submap;
 use submap::show_binds_in_submap;
 
 pub mod remote;
+pub mod commands;
 
 #[derive(Debug, Clone, clap::Args)]
 pub struct Arguments {
@@ -24,84 +24,45 @@ pub struct Arguments {
 
 static DAEMON_SOCKET: LazyLock<String> = LazyLock::new(|| Daemon::socket_path().unwrap());
 
-enum StepStatusUpdate {
+pub enum StepState {
 	KeepActive,
 	Done,
 }
 
 ///A temporary, non-blocking stage in the main loop, often used for certain client requests.
-trait MainLoopStep: std::fmt::Debug {
-	fn step(&mut self) -> Result<StepStatusUpdate> {
-		Ok(StepStatusUpdate::KeepActive)
+pub trait MainLoopStep: std::fmt::Debug {
+	fn step(&mut self) -> Result<StepState> {
+		Ok(StepState::KeepActive)
 	}
-	fn on_event(&mut self, event: &Event) -> Result<()> {
-		Ok(())
+	#[allow(unused_variables)]
+	fn on_event(&mut self, event: &Event) -> Result<StepState> {
+		Ok(StepState::KeepActive)
 	}
 	///Used to catch errors, potentially to relay them to connected clients. Returns an Error if
 	///the main loop must break its processing for one iteration. If it returns an Error, this
 	///entry will also be removed.
-	fn on_error(&mut self, error: anyhow::Error) -> Result<StepStatusUpdate> {
+	fn on_error(&mut self, error: anyhow::Error) -> Result<StepState> {
 		Err(error)
-	}
-}
-
-#[derive(Debug)]
-struct EwwInfoStep {
-	socket: UnixStream
-} impl EwwInfoStep {
-	fn send_update(&mut self) -> Result<()> {
-		let monitors = hyprctl::monitors()?;
-		let update: EwwInfo = EwwInfo(hyprctl::workspaces()?.into_iter()
-			.map(|w| remote::EwwWorkspace::new(&monitors, w))
-			.collect()
-		);
-		ciborium::into_writer(&update, &mut self.socket)?;
-		
-		Ok(())
-	}
-} impl MainLoopStep for EwwInfoStep {
-	fn on_event(&mut self, event: &Event) -> Result<()> {
-		match event {
-			Event::FocusedMon { .. } |
-			Event::Workspace { .. } |
-			Event::CreateWorkspace { .. } |
-			Event::DestroyWorkspace { .. } |
-			Event::RenameWorkspace { .. } |
-			Event::ActiveSpecial { .. } => {
-				self.send_update()?;
-			},
-			_ => {},
-		}
-
-		Ok(())
-	}
-	fn on_error(&mut self, error: anyhow::Error) -> Result<StepStatusUpdate> {
-		let _ = ciborium::into_writer(&RemoteResponse::Error(format!("{error:#}")), &mut self.socket);
-		Ok(StepStatusUpdate::Done)
 	}
 }
 
 #[derive(Debug)]
 struct SubmapContentEntry {
     panel: Option<Child>,
-}
-impl MainLoopStep for SubmapContentEntry {
-	fn on_event(&mut self, event: &Event) -> Result<()> {
-        match event {
-            Event::Submap { name } => {
-                if let Some(name) = name {
-                    if let Some(mut child) = self.panel.take() {
-                        let _ = child.kill();
-                    }
-                    self.panel = Some(show_binds_in_submap(&name)?);
-                } else if let Some(mut child) = self.panel.take() {
-                    let _ = child.kill();
-                }
-            },
-            _ => {}
-        }
+} impl MainLoopStep for SubmapContentEntry {
+	fn on_event(&mut self, event: &Event) -> Result<StepState> {
+        if let Event::Submap { name } = event {
+			if let Some(name) = name {
+				if let Some(mut child) = self.panel.take() {
+					let _ = child.kill();
+				}
+				self.panel = Some(show_binds_in_submap(name)?);
+			} else if let Some(mut child) = self.panel.take() {
+				let _ = child.kill();
+			}
+		}
 
-		Ok(())
+		Ok(StepState::KeepActive)
 	}
 }
 
@@ -110,9 +71,8 @@ pub struct Daemon {
     options: Arguments,
     socket2: hyprctl::Socket2,
     home_helper_socket: UnixListener,
-	entries: Vec<Box<dyn MainLoopStep>>
-}
-impl Daemon {
+	pub steps: Vec<Box<dyn MainLoopStep>>
+} impl Daemon {
     fn new(options: Arguments) -> Result<Self> {
         let addr = &*DAEMON_SOCKET;
         println!("Opening socket at {addr}");
@@ -120,15 +80,12 @@ impl Daemon {
         socket.set_nonblocking(true)?;
 
         let socket2 = hyprctl::Socket2::new()?;
-		let mut entries: Vec<Box<dyn MainLoopStep>> = vec![];
-		if options.submap {
-			entries.push(Box::new(SubmapContentEntry { panel: None }));
-		}
+		let steps: Vec<Box<dyn MainLoopStep>> = vec![];
         Ok(Daemon {
             options,
             socket2,
             home_helper_socket: socket,
-			entries,
+			steps,
         })
     }
     pub fn socket_path() -> Result<String> {
@@ -138,6 +95,9 @@ impl Daemon {
 
     pub fn launch(options: Arguments) -> Result<()> {
         let mut d = Self::new(options)?;
+		if d.options.submap {
+			d.steps.push(Box::new(SubmapContentEntry { panel: None }));
+		}
 
         let must_exit = Arc::new(AtomicBool::new(false));
         let thread_must_exit = Arc::clone(&must_exit);
@@ -146,11 +106,17 @@ impl Daemon {
             thread_must_exit.store(true, Ordering::Relaxed);
         })?;
 
+		let mut last_step = Instant::now();
         loop {
             d.step()?;
             if must_exit.load(Ordering::Relaxed) {
                 break;
             }
+			let this_step = Instant::now();
+			if this_step.duration_since(last_step) < Duration::from_millis(25) {
+				std::thread::sleep(Duration::from_millis(25) - this_step.duration_since(last_step));
+			}
+			last_step = this_step;
         }
 
         Ok(())
@@ -160,24 +126,24 @@ impl Daemon {
         self.hyprctl_step()?;
         self.listener_step()?;
 		let mut i = 0;
-		while i < self.entries.len() {
-			let entry = &mut self.entries[i];
+		while i < self.steps.len() {
+			let entry = &mut self.steps[i];
 			let mut should_increment = true;
 			match entry.step() {
-				Ok(StepStatusUpdate::Done) => {
-					self.entries.remove(i);
+				Ok(StepState::Done) => {
+					self.steps.remove(i);
 					should_increment = false;
 				},
-				Ok(StepStatusUpdate::KeepActive) => {},
+				Ok(StepState::KeepActive) => {},
 				Err(e) => {
 					match entry.on_error(e) {
-						Ok(StepStatusUpdate::KeepActive) => {},
-						Ok(StepStatusUpdate::Done) => {
-							self.entries.remove(i);
+						Ok(StepState::KeepActive) => {},
+						Ok(StepState::Done) => {
+							self.steps.remove(i);
 							should_increment = false;
 						}
 						Err(e) => {
-							self.entries.remove(i);
+							self.steps.remove(i);
 							return Err(e);
 						}
 					}
@@ -205,31 +171,9 @@ impl Daemon {
         Ok(())
     }
 
-	fn listener_handle_request(&mut self, request: RemoteRequest) -> Result<RemoteResponse> {
-		Ok(match request {
-			RemoteRequest::Workspaces => RemoteResponse::Workspaces(hyprctl::workspaces()?),
-			RemoteRequest::Monitors => RemoteResponse::Monitors(hyprctl::monitors()?),
-			_ => unimplemented!(),
-		})
-	}
-
 	fn listener_handle_socket(&mut self, mut socket: UnixStream) -> Result<()> {
-		let request: RemoteRequest = ciborium::from_reader(&mut socket)?;
-		match request {
-			RemoteRequest::ListenEww => {
-				socket.set_nonblocking(true)?;
-				let mut step = EwwInfoStep { socket };
-				step.send_update()?;
-				self.entries.push(Box::new(step));
-			},
-			r => match self.listener_handle_request(r) {
-				Ok(response) => ciborium::into_writer(&response, &mut socket)?,
-				Err(e) => {
-					log_error(&e);
-					ciborium::into_writer(&RemoteResponse::Error(format!("{e:#}")), &mut socket)?;
-				},
-			}
-		}
+		let request: commands::Command = ciborium::from_reader(&mut socket)?;
+		request.dispatch_daemon(self, socket)?;
 
 		Ok(())
 	}
@@ -251,19 +195,23 @@ impl Daemon {
     fn handle_event(&mut self, event: Result<Event>) -> Result<()> {
 		let event = event?;
 		let mut i = 0;
-		while i < self.entries.len() {
-			let entry = &mut self.entries[i];
+		while i < self.steps.len() {
+			let entry = &mut self.steps[i];
 			let mut should_increment = true;
 			match entry.on_event(&event) {
-				Ok(()) => {},
+				Ok(StepState::KeepActive) => {},
+				Ok(StepState::Done) => {
+					self.steps.remove(i);
+					should_increment = false;
+				},
 				Err(e) => match entry.on_error(e) {
-					Ok(StepStatusUpdate::KeepActive) => {},
-					Ok(StepStatusUpdate::Done) => {
-						self.entries.remove(i);
+					Ok(StepState::KeepActive) => {},
+					Ok(StepState::Done) => {
+						self.steps.remove(i);
 						should_increment = false;
 					}
 					Err(e) => {
-						self.entries.remove(i);
+						self.steps.remove(i);
 						return Err(e);
 					}
 				}
@@ -275,9 +223,7 @@ impl Daemon {
 
         Ok(())
     }
-}
-
-impl Drop for Daemon {
+} impl Drop for Daemon {
     fn drop(&mut self) {
         let addr = &*DAEMON_SOCKET;
         println!("Closing socket at {addr}");

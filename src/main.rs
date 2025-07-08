@@ -4,7 +4,7 @@ use anyhow::{Error, Result};
 use clap::Parser;
 
 mod daemon;
-mod hyprctl;
+pub mod hyprctl; //pub silences an error in daemon::commands::prelude
 
 #[derive(Debug, Clone, clap::Parser)]
 #[command(version, about, propagate_version = true)]

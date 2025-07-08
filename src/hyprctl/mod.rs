@@ -16,6 +16,15 @@ pub use workspaces::*;
 pub mod monitors;
 pub use monitors::*;
 
+pub mod prelude {
+	pub use crate::hyprctl;
+	pub use super::{
+		Event,
+		Workspace,
+		Monitor,
+	};
+}
+
 pub static SOCKET1: LazyLock<String> = LazyLock::new(|| {
     let runtime = std::env::var("XDG_RUNTIME_DIR").unwrap();
     let his = std::env::var("HYPRLAND_INSTANCE_SIGNATURE").unwrap();
